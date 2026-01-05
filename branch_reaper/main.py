@@ -46,7 +46,7 @@ class Branch:
     commit_message: Optional[str] = None
 
 
-class GitBranchManager:
+class BranchManager:
     def __init__(self):
         self.local_branches: list[Branch] = []
         self.remote_branches: list[Branch] = []
@@ -184,12 +184,12 @@ class GitBranchManager:
         return False, f"Failed to delete {branch.name}: {output}"
 
 
-def print_header(manager: GitBranchManager):
+def print_header(manager: BranchManager):
     """Print the application header."""
     console.print()
     console.print(
         Panel.fit(
-            f"[bold cyan]Git Branch Manager[/bold cyan]\n"
+            f"[bold cyan]🌾 Branch Reaper[/bold cyan]\n"
             f"[dim]Repository: {manager.get_repo_name()}[/dim]",
             border_style="cyan",
         )
@@ -198,7 +198,7 @@ def print_header(manager: GitBranchManager):
 
 
 
-def refresh_from_remote(manager: GitBranchManager):
+def refresh_from_remote(manager: BranchManager):
     """Fetch and prune from remote."""
     console.print()
     with console.status("[bold cyan]Fetching from remote...[/bold cyan]", spinner="dots"):
@@ -213,7 +213,7 @@ def refresh_from_remote(manager: GitBranchManager):
     console.print()
 
 
-def delete_local_branches(manager: GitBranchManager):
+def delete_local_branches(manager: BranchManager):
     """Interactive deletion of local branches."""
     console.print()
 
@@ -289,7 +289,7 @@ def delete_local_branches(manager: GitBranchManager):
     console.print()
 
 
-def delete_remote_branches(manager: GitBranchManager):
+def delete_remote_branches(manager: BranchManager):
     """Interactive deletion of remote branches."""
     console.print()
 
@@ -388,10 +388,15 @@ def delete_remote_branches(manager: GitBranchManager):
                 )
             )
 
+        # Refresh branches after remote deletion
+        console.print()
+        with console.status("[bold cyan]Refreshing branches...[/bold cyan]", spinner="dots"):
+            manager.load_branches()
+
     console.print()
 
 
-def display_branches(manager: GitBranchManager):
+def display_branches(manager: BranchManager):
     """Display all branches in formatted tables."""
     # Local branches table
     local_table = Table(
@@ -449,13 +454,150 @@ def display_branches(manager: GitBranchManager):
         console.print()
 
 
-def main_menu(manager: GitBranchManager) -> bool:
+def delete_both_branches(manager: BranchManager):
+    """Interactive deletion of both local and remote branches together."""
+    console.print()
+
+    # Helper to check if branch is protected
+    def is_protected(branch_name: str) -> bool:
+        if "/" in branch_name:
+            name = branch_name.split("/", 1)[1]
+            return name in PROTECTED_BRANCHES
+        return branch_name in PROTECTED_BRANCHES
+
+    # Get deletable local branches (excluding current and protected)
+    deletable_local = [
+        b for b in manager.local_branches
+        if not b.is_current and b.name not in PROTECTED_BRANCHES
+    ]
+
+    # Get deletable remote branches (excluding protected)
+    deletable_remote = [b for b in manager.remote_branches if not is_protected(b.name)]
+
+    if not deletable_local and not deletable_remote:
+        console.print("[yellow]No branches to delete[/yellow]")
+        console.print("[dim]Protected branches (main, master, develop) and current branch are excluded[/dim]")
+        console.print()
+        input("Press Enter to continue...")
+        return
+
+    # Warning for remote deletion
+    if deletable_remote:
+        console.print(
+            Panel(
+                "[bold red]⚠ WARNING[/bold red]\n"
+                "This view includes remote branches!\n"
+                "Deleting remote branches affects the shared repository.",
+                border_style="red",
+            )
+        )
+        console.print()
+
+    # Create choices with clear labels
+    choices = []
+
+    if deletable_local:
+        choices.append(questionary.Separator("── Local Branches ──"))
+        for branch in deletable_local:
+            label = f"[local] {branch.name}"
+            if branch.is_gone:
+                label = f"[local] {branch.name} [GONE]"
+            choices.append(questionary.Choice(title=label, value=("local", branch.name)))
+
+    if deletable_remote:
+        choices.append(questionary.Separator("── Remote Branches ──"))
+        for branch in deletable_remote:
+            choices.append(questionary.Choice(title=f"[remote] {branch.name}", value=("remote", branch.name)))
+
+    # Show info about orphaned branches
+    orphaned = [b for b in deletable_local if b.is_gone]
+    if orphaned:
+        console.print(
+            f"[yellow]💡 Tip: {len(orphaned)} local branch(es) marked as GONE - "
+            f"their remote tracking branch no longer exists[/yellow]"
+        )
+        console.print()
+
+    selected = questionary.checkbox(
+        "Select branches to delete:",
+        choices=choices,
+        style=custom_style,
+        instruction="(Space to select, Enter to confirm)",
+    ).ask()
+
+    if not selected:
+        console.print("[dim]No branches selected[/dim]")
+        console.print()
+        return
+
+    # Separate local and remote selections
+    local_selected = [name for (type_, name) in selected if type_ == "local"]
+    remote_selected = [name for (type_, name) in selected if type_ == "remote"]
+
+    # Confirmation
+    console.print()
+    if local_selected:
+        console.print("[bold]Local branches to delete:[/bold]")
+        for name in local_selected:
+            console.print(f"  [red]•[/red] {name}")
+    if remote_selected:
+        console.print("[bold red]Remote branches to delete:[/bold red]")
+        for name in remote_selected:
+            console.print(f"  [red]•[/red] {name}")
+    console.print()
+
+    confirm_msg = f"Delete {len(selected)} branch(es)?"
+    if remote_selected:
+        confirm_msg = f"Delete {len(selected)} branch(es)? (includes {len(remote_selected)} REMOTE)"
+
+    if not questionary.confirm(
+        confirm_msg,
+        default=False,
+        style=custom_style,
+    ).ask():
+        console.print("[dim]Cancelled[/dim]")
+        console.print()
+        return
+
+    # Delete local branches
+    console.print()
+    if local_selected:
+        for name in local_selected:
+            branch = next((b for b in deletable_local if b.name == name), None)
+            if branch:
+                success, message = manager.delete_local_branch(branch, force=True)
+                if success:
+                    console.print(f"[green]✓[/green] {message}")
+                else:
+                    console.print(f"[red]✗[/red] {message}")
+
+    # Delete remote branches
+    if remote_selected:
+        for name in remote_selected:
+            branch = next((b for b in manager.remote_branches if b.name == name), None)
+            if branch:
+                success, message = manager.delete_remote_branch(branch)
+                if success:
+                    console.print(f"[green]✓[/green] {message}")
+                else:
+                    console.print(f"[red]✗[/red] {message}")
+
+        # Refresh after remote deletion
+        console.print()
+        with console.status("[bold cyan]Refreshing branches...[/bold cyan]", spinner="dots"):
+            manager.load_branches()
+
+    console.print()
+
+
+def main_menu(manager: BranchManager) -> bool:
     """Show main menu and handle selection. Returns False to exit."""
     display_branches(manager)
 
     choices = [
         questionary.Choice(title="🗑️  Delete local branches", value="delete_local"),
         questionary.Choice(title="☁️  Delete remote branches", value="delete_remote"),
+        questionary.Choice(title="⚔️  Delete local & remote branches", value="delete_both"),
         questionary.Choice(title="🔄 Refresh from remote (git fetch --prune)", value="refresh"),
         questionary.Separator(),
         questionary.Choice(title="👋 Exit", value="exit"),
@@ -476,12 +618,14 @@ def main_menu(manager: GitBranchManager) -> bool:
         delete_local_branches(manager)
     elif action == "delete_remote":
         delete_remote_branches(manager)
+    elif action == "delete_both":
+        delete_both_branches(manager)
 
     return True
 
 
 def main():
-    manager = GitBranchManager()
+    manager = BranchManager()
 
     # Check if we're in a git repo
     if not manager.is_git_repo():
