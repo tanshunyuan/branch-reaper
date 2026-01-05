@@ -1,7 +1,18 @@
 [project]
 name = "branch-reaper"
 version = "0.1.0"
-description = "Add your description here"
+description = "I got tired of typing git branch -D after a PR"
 readme = "README.md"
 requires-python = ">=3.13.11"
-dependencies = []
+dependencies = [
+    "rich>=13.0.0",
+    "questionary>=2.0.0",
+]
+
+[project.scripts]
+branch-reaper = "branch_reaper:main"
+br = "branch_reaper:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
